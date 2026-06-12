@@ -70,7 +70,7 @@ run_wmu_analysis <- function(wmu_ids,
                              density_radius = 1000) {
   
   ## --- WMU ---
-  # wmu_ids <- c("2-6")
+  # wmu_ids <- c("2-8")
   
   bb_WMUs <- bcdc_query_geodata("028d4791-1241-437a-9f7b-fdf08b0d6dfb") %>%
     filter(WILDLIFE_MGMT_UNIT_ID %in% wmu_ids) %>%
@@ -88,18 +88,16 @@ run_wmu_analysis <- function(wmu_ids,
   
   
   ## --- WATER
-  water <- retrieve_geodata_aoi("414be2d6-f4d9-4f32-b960-caa074c6d36b", aoi) %>%
-    filter(DESCRIPTION %in% c("Lake","River","Wetland"))
-  
-  ## --- Step 2: reduce AOI for heavy layers ---
-  aoi_small <- water %>%
-    st_buffer(5000) %>%   # adjust (3–10 km works well)
-    st_union()
+  water <- st_read("WSA_WB_PLY_polygon.shp") %>% st_as_sf() %>%
+    st_transform(st_crs(aoi)) %>%
+    st_intersection(aoi)
+  water <- water %>% filter(DSCRPTN %in% c("Lake","River","Wetland"))
+  water <- st_buffer(water, dist=200)
   
   ## --- ROADS
   roads <- st_read("DRA_MPAR_line.shp") %>% st_as_sf() %>%
-    st_transform(st_crs(aoi_small)) %>%
-    st_intersection(aoi_small)
+    st_transform(st_crs(aoi)) %>%
+    st_intersection(aoi)
   
   # roads %>% group_by(FTYPE) %>% count(ROAD_CLASS) %>% print(n=25)
   roads <- roads %>% filter(FTYPE=="Road") %>% 
@@ -111,12 +109,13 @@ run_wmu_analysis <- function(wmu_ids,
   
   ## --- LAND OWNERSHIP
   parcels <- st_read("PMBC_PF_O_polygon.shp") %>% st_as_sf() %>%
-    st_transform(st_crs(aoi_small)) %>%
-    st_intersection(aoi_small) %>%
+    st_transform(st_crs(aoi)) %>%
+    st_intersection(aoi) %>%
     st_simplify(dTolerance = 20)
-  parcels %>% group_by(OWNER_TYPE) %>% count(CLASS) %>% print(n=34)
-  notcrown <- parcels %>% filter(OWNER_TYPE!="Crown Provincial")
+  # parcels %>% group_by(OWNER_TYPE) %>% count(CLASS) %>% print(n=34)
+  notcrown <- parcels %>% filter(OWNER_TYPE!="Crown Provincial") # want to exclude from these areas - so need to mask out
   crown <- parcels %>% filter(OWNER_TYPE=="Crown Provincial")
+  rm(parcels)
   
   ## --- PARKS
   parks <- retrieve_geodata_aoi("1130248f-f1a3-4956-8b2e-38d29d3e4af7", aoi)
@@ -137,15 +136,15 @@ run_wmu_analysis <- function(wmu_ids,
   r_water  <- rasterize(vect(water),   r_template, field = 1, background = 0)
   r_roads  <- rasterize(vect(roads),   r_template, field = 1, background = 0)
   r_fsr    <- rasterize(vect(fsr),     r_template, field = 1, background = 0)
-  r_crown <- rasterize(vect(crown), r_template, field = 1, background = 0)
+  # r_crown <- rasterize(vect(crown), r_template, field = 1, background = 0)
   r_notcrown <- rasterize(vect(notcrown), r_template, field = 1, background = 0)
   r_parks  <- rasterize(vect(parks),   r_template, field = 1, background = 0)
   r_cut    <- rasterize(vect(cutblocks), r_template, field = 1, background = 0)
   
-  ## --- Distance ---
-  d_water  <- distance(r_water)
-  d_fsr    <- distance(r_fsr)
-  d_parcel <- distance(r_notcrown)
+  # ## --- Distance ---
+  # d_water  <- distance(r_water)
+  # d_fsr    <- distance(r_fsr)
+  # d_parcel <- distance(r_notcrown)
   
   ## --- ROAD DENSITY ---
   w <- focalMat(r_roads, d = density_radius, type = "circle")
@@ -158,14 +157,17 @@ run_wmu_analysis <- function(wmu_ids,
   ## --- CRITERIA ---
   
   # 1 Water
+  plot(r_water)
   water_bin <- d_water <= water_dist
   
   # 2 Parks (mask)
   park_mask <- classify(r_parks, cbind(1, NA))
   
   # 3 Human
-  human_pressure <- exp(-d_parcel / 1000)
-  human_suit <- (1 - human_pressure) * road_density_suit
+  notcrown_mask <- classify(r_notcrown, cbind(1, NA))
+
+  #  human_pressure <- exp(-d_parcel / 1000)
+  # human_suit <- (1 - human_pressure) * road_density_suit
   
   # 4 FSR depth
   fsr_suit <- ifel(d_fsr >= fsr_min & d_fsr <= fsr_max, 1, 0)
@@ -189,35 +191,30 @@ run_wmu_analysis <- function(wmu_ids,
   # Combine habitat
   habitat <- (0.6 * huck_suit + 0.4 * cut_suit)
   
-  ## --- FINAL MODEL ---
-  suitability <- (0.25 * water_bin +
-                    0.35 * habitat +
-                    0.20 * human_suit +
-                    0.20 * fsr_suit)
+  final_suit <- (0.6 * habitat) + (0.4 * road_density_suit)
   
-  suitability <- mask(suitability, park_mask)
-  names(suitability) <- "BB_suitability"
+  # ## --- FINAL MODEL ---
   
-  ## --- TOP AREAS ---
-  vals <- values(suitability)
-  thresh <- quantile(vals, 0.8, na.rm = TRUE)
+  final_suit <- mask(final_suit, r_water) |> 
+    mask(park_mask) |>
+    mask(notcrown_mask)
   
-  best <- suitability >= thresh
-  best_poly <- as.polygons(best, dissolve = TRUE) |> st_as_sf()
-  ggplot() + geom_sf(data=best_poly)
-  ggplot() + geom_sf(data=aoi)
+  plot(final_suit)
+  names(final_suit) <- "BB_suitability"
+  
   
   return(list(
-    suitability = suitability,
-    best_areas = best_poly,
-    cutblocks = r_cut,
-    road_density = road_density
+    suitability = final_suit,
+    # cutblocks = r_cut,
+    # road_density = road_density
   ))
 }
 #####################################################################################
 
 
-result <- run_wmu_analysis(c("2-3","2-4","2-5","2-6","2-8"))
+result <- run_wmu_analysis(c("2-8")) #"2-3","2-4","2-5","2-6"
+writeRaster(final_suit, "BB_Suitability_26.tif", overwrite = TRUE)
+
 st_write(result$best_areas, "BB_BestAreas_2026.shp")
 writeRaster(result$road_density, "BB_RoadDensity_2026.tif", overwrite = TRUE)
 writeRaster(result$cutblocks, "BB_Cutblocks_2026.tif", overwrite = TRUE)
