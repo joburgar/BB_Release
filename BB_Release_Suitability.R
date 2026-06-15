@@ -65,8 +65,8 @@ clip_raster_to_aoi <- function(r, aoi) {
 run_wmu_analysis <- function(wmu_ids,
                              res = 100,
                              water_dist = 100,
-                             fsr_min = 2000,
-                             fsr_max = 8000,
+                             # fsr_min = 2000,
+                             # fsr_max = 8000,
                              density_radius = 1000) {
   
   ## --- WMU ---
@@ -86,7 +86,6 @@ run_wmu_analysis <- function(wmu_ids,
     ext(vect(aoi)),
     resolution = as.numeric(res)[1],crs = "EPSG:3005")
   
-  
   ## --- WATER
   water <- st_read("WSA_WB_PLY_polygon.shp") %>% st_as_sf() %>%
     st_transform(st_crs(aoi)) %>%
@@ -105,7 +104,7 @@ run_wmu_analysis <- function(wmu_ids,
     select(ROAD_CLASS, FTYPE, RDNAME, RDSURFACE) 
   
   ## --- FSR extraction ---
-  fsr <- roads %>% filter(ROAD_CLASS=="resource")
+  # fsr <- roads %>% filter(ROAD_CLASS=="resource")
   
   ## --- LAND OWNERSHIP
   parcels <- st_read("PMBC_PF_O_polygon.shp") %>% st_as_sf() %>%
@@ -135,18 +134,15 @@ run_wmu_analysis <- function(wmu_ids,
   ## --- Rasterize ---
   r_water  <- rasterize(vect(water),   r_template, field = 1, background = 0)
   r_roads  <- rasterize(vect(roads),   r_template, field = 1, background = 0)
-  r_fsr    <- rasterize(vect(fsr),     r_template, field = 1, background = 0)
+  # r_fsr    <- rasterize(vect(fsr),     r_template, field = 1, background = 0)
   # r_crown <- rasterize(vect(crown), r_template, field = 1, background = 0)
   r_notcrown <- rasterize(vect(notcrown), r_template, field = 1, background = 0)
   r_parks  <- rasterize(vect(parks),   r_template, field = 1, background = 0)
   r_cut    <- rasterize(vect(cutblocks), r_template, field = 1, background = 0)
   
-  # ## --- Distance ---
-  # d_water  <- distance(r_water)
-  # d_fsr    <- distance(r_fsr)
-  # d_parcel <- distance(r_notcrown)
-  
   ## --- ROAD DENSITY ---
+  # d_fsr    <- distance(r_fsr)
+  
   w <- focalMat(r_roads, d = density_radius, type = "circle")
   road_density <- focal(r_roads, w = w, fun = "sum", na.rm = TRUE)
   
@@ -157,7 +153,7 @@ run_wmu_analysis <- function(wmu_ids,
   ## --- CRITERIA ---
   
   # 1 Water
-  plot(r_water)
+  d_water  <- distance(r_water)
   water_bin <- d_water <= water_dist
   
   # 2 Parks (mask)
@@ -166,11 +162,8 @@ run_wmu_analysis <- function(wmu_ids,
   # 3 Human
   notcrown_mask <- classify(r_notcrown, cbind(1, NA))
 
-  #  human_pressure <- exp(-d_parcel / 1000)
-  # human_suit <- (1 - human_pressure) * road_density_suit
-  
   # 4 FSR depth
-  fsr_suit <- ifel(d_fsr >= fsr_min & d_fsr <= fsr_max, 1, 0)
+  # fsr_suit <- ifel(d_fsr >= fsr_min & d_fsr <= fsr_max, 1, 0)
   
   ## --- HABITAT ---
   
@@ -195,7 +188,9 @@ run_wmu_analysis <- function(wmu_ids,
   
   # ## --- FINAL MODEL ---
   
-  final_suit <- mask(final_suit, r_water) |> 
+  final_suit <- final_suit * water_bin
+  
+  final_suit <- final_suit |> 
     mask(park_mask) |>
     mask(notcrown_mask)
   
@@ -204,7 +199,8 @@ run_wmu_analysis <- function(wmu_ids,
   
   
   return(list(
-    suitability = final_suit,
+    suitability = final_suit
+    # fsr = fsr_suit
     # cutblocks = r_cut,
     # road_density = road_density
   ))
@@ -212,11 +208,17 @@ run_wmu_analysis <- function(wmu_ids,
 #####################################################################################
 
 
-result <- run_wmu_analysis(c("2-8")) #"2-3","2-4","2-5","2-6"
-writeRaster(final_suit, "BB_Suitability_26.tif", overwrite = TRUE)
+# result <- run_wmu_analysis(c("2-6")) #"2-3","2-4","2-5","2-6"
+# 
+# writeRaster(result$suitability, "BB_Suitability_2-6.tif", overwrite = TRUE)
+# writeRaster(result$fsr, "BB_fsr_2-6.tif", overwrite = TRUE)
 
-st_write(result$best_areas, "BB_BestAreas_2026.shp")
-writeRaster(result$road_density, "BB_RoadDensity_2026.tif", overwrite = TRUE)
-writeRaster(result$cutblocks, "BB_Cutblocks_2026.tif", overwrite = TRUE)
-writeRaster(result$suitability, "BB_suitability_2026.tif", overwrite = TRUE)
+
+result <- run_wmu_analysis(c("2-7"))
+writeRaster(result$suitability, "BB_Suitability_2-7.tif", overwrite = TRUE)
+# writeRaster(result$fsr, "BB_fsr_2-7.tif", overwrite = TRUE)
+
+result <- run_wmu_analysis(c("2-5"))
+writeRaster(result$suitability, "BB_Suitability_2-5.tif", overwrite = TRUE)
+# writeRaster(result$fsr, "BB_fsr_2-5.tif", overwrite = TRUE)
 
